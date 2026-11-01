@@ -6,15 +6,18 @@ class TrainConfig:
     # --- Model selection ---
     is_turbo: bool = True  # True: Turbo (GPT-2 medium). False: Standard.
     is_nano: bool = True   # True: Nano (GPT-2 small). Requires is_turbo=True.
-
+    
+    # --- Training strategy ---
+    is_lora: bool = True  # True: LoRA (recommended for < 10h data). False: full fine-tune.
+    
     # --- Paths ---
     # Directory where setup.py downloads the base model files
     model_dir: str = "./pretrained_models_nano" if is_nano else "./pretrained_models"
     # Path to your metadata CSV (Format: ID|RawText|NormText)
     #csv_path: str = "./MyTTSDataset/metadata.csv"
-    metadata_path: str = "/Users/gokhaneraslan/Desktop/chatterbox/metadata_final.json"
+    metadata_path: str = "./MyTTSDataset/metadata_final.json"
     # Directory containing WAV files
-    wav_dir: str = "/Users/gokhaneraslan/Desktop/chatterbox/preprocess"
+    wav_dir: str = "./maya1_dataset/wavs"
     #wav_dir: str = "./FileBasedDataset"
     preprocessed_dir = "./MyTTSDataset/preprocess_nano" if is_nano else "./MyTTSDataset/preprocess"
     #preprocessed_dir = "./FileBasedDataset/preprocess"
@@ -28,13 +31,10 @@ class TrainConfig:
     # --- Dataset ---
     ljspeech = False      # True: LJSpeech format (metadata.csv)
     json_format = True  # True: JSON format. False (with ljspeech=False): file-based.
-    preprocess = False    # Set False if the dataset is already preprocessed.
+    preprocess = True    # Set False if the dataset is already preprocessed.
 
-    # --- Training strategy ---
-    is_lora: bool = True  # True: LoRA (recommended for < 10h data). False: full fine-tune.
-
-    lora_r: int = 128
-    lora_alpha: int = 256
+    lora_r: int = 16
+    lora_alpha: int = 32
     turbo_lora_target_modules: List[str] = field(default_factory=lambda: ["c_attn", "c_proj", "c_fc", "spkr_enc"])
     lora_target_modules: List[str] = field(default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "spkr_enc"])
     lora_modules_to_save: List[str] = field(default_factory=lambda: ["text_emb", "text_head"])
@@ -50,7 +50,7 @@ class TrainConfig:
     num_epochs: int = 10 if is_lora else 30
     save_steps: int = 500
     save_total_limit: int = 5
-    dataloader_num_workers: int = 8
+    dataloader_num_workers: int = 4
 
     # --- Constraints ---
     start_text_token = 255
