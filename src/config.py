@@ -33,8 +33,8 @@ class TrainConfig:
     json_format = True  # True: JSON format. False (with ljspeech=False): file-based.
     preprocess = True    # Set False if the dataset is already preprocessed.
 
-    lora_r: int = 16
-    lora_alpha: int = 32
+    lora_r: int = 32
+    lora_alpha: int = 64
     turbo_lora_target_modules: List[str] = field(default_factory=lambda: ["c_attn", "c_proj", "c_fc", "spkr_enc"])
     lora_target_modules: List[str] = field(default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "spkr_enc"])
     lora_modules_to_save: List[str] = field(default_factory=lambda: ["text_emb", "text_head"])
@@ -49,6 +49,7 @@ class TrainConfig:
     learning_rate: float = 1e-4 if is_lora else 1e-5
     num_epochs: int = 10 if is_lora else 30
     save_steps: int = 500
+    logging_steps: int = 100
     save_total_limit: int = 5
     dataloader_num_workers: int = 4
 

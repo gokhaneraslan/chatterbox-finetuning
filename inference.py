@@ -42,7 +42,7 @@ else:
     }
 
 TEXT_TO_SAY = "Merhaba, sesimi geliştirmem oldukça uzun zaman aldı ve şimdi sahip olduğuma göre, sessiz kalmayacağım."
-AUDIO_PROMPT = "./speaker_reference/2.wav"
+AUDIO_PROMPT = cfg.inference_prompt_path
 OUTPUT_FILE = "./output.wav"
 
 

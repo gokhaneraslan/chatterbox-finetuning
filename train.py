@@ -181,7 +181,8 @@ def main():
         num_train_epochs=cfg.num_epochs,
         save_strategy="steps",
         save_steps=cfg.save_steps,
-        logging_strategy="epoch",
+        logging_strategy="steps",
+        logging_steps=cfg.logging_steps,
         remove_unused_columns=False,  # Required for our custom wrapper
         dataloader_num_workers=cfg.dataloader_num_workers,
         report_to=["tensorboard"],
@@ -189,8 +190,8 @@ def main():
         bf16=True,
         save_total_limit=cfg.save_total_limit,
         gradient_checkpointing=True,  # Reduces VRAM usage by ~60%
-        dataloader_persistent_workers=True,
-        dataloader_pin_memory=True,
+        dataloader_persistent_workers=cfg.dataloader_num_workers > 0,
+        dataloader_pin_memory=torch.cuda.is_available(),
     )
 
     trainer = Trainer(
