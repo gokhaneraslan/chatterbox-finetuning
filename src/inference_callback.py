@@ -3,12 +3,13 @@ import torch
 import soundfile as sf
 from transformers import TrainerCallback
 from safetensors.torch import load_file
+from safetensors.torch import save_file
 
 from src.chatterbox_.tts import ChatterboxTTS
 from src.chatterbox_.tts_turbo import ChatterboxTurboTTS
 from src.chatterbox_.models.t3.t3 import T3
 from src.model import resize_and_load_t3_weights
-from src.utils import setup_logger, trim_silence_with_vad
+from src.utils import setup_logger, trim_silence_with_vad, load_t3_state
 
 
 logger = setup_logger("InferenceCallback")
@@ -27,12 +28,12 @@ class InferenceCallback(TrainerCallback):
             self.skip_inference = True
 
         elif not hasattr(config, 'inference_test_text') or not config.inference_test_text:
-            logger.warning("The inference test text is not specified; the sample will be skipped.")
+            logger.warning("The inference test text is not specified; sampling will be skipped.")
             self.skip_inference = True
 
         else:
             self.skip_inference = False
-            logger.info(f"Inference Callback is ready. Examples will be saved here: {self.inference_dir}")
+            logger.info(f"Inference callback is ready. Samples will be saved to: {self.inference_dir}")
 
     def on_save(self, args, state, control, **kwargs):
 
@@ -45,7 +46,7 @@ class InferenceCallback(TrainerCallback):
 
         if is_lora:
             if not os.path.exists(checkpoint_dir):
-                logger.warning(f"Checkpoint directory could not be found: {checkpoint_dir}")
+                logger.warning(f"Checkpoint directory not found: {checkpoint_dir}")
                 return
 
             logger.info(f"Initializing inference for checkpoint-{step} (LoRA)...")
@@ -66,7 +67,7 @@ class InferenceCallback(TrainerCallback):
                     peft_model_to_save.save_pretrained(checkpoint_dir)
                     logger.info("Adapter config and weights saved successfully.")
                 else:
-                    logger.warning("Could not find a save_pretrained method on the model.")
+                    logger.warning("No save_pretrained method found on the model.")
 
             except Exception as e:
                 logger.error(f"Failed to force save PEFT adapters: {e}")
@@ -75,7 +76,7 @@ class InferenceCallback(TrainerCallback):
                 output_path = os.path.join(self.inference_dir, f"checkpoint-{step}.wav")
                 self._generate_sample_lora(checkpoint_dir, output_path)
             except Exception as e:
-                logger.error(f"An error occurred during LoRA inference (Step: {step}): {e}", exc_info=True)
+                logger.error(f"Error during LoRA inference (step {step}): {e}", exc_info=True)
 
         else:
 
@@ -84,16 +85,16 @@ class InferenceCallback(TrainerCallback):
                 weights_path = os.path.join(checkpoint_dir, "pytorch_model.bin")
 
             if not os.path.exists(weights_path):
-                logger.warning(f"Checkpoint weights could not be found: {checkpoint_dir}")
+                logger.warning(f"Checkpoint weights not found: {checkpoint_dir}")
                 return
 
             logger.info(f"Initializing inference for checkpoint-{step} (Full Fine-Tune)...")
 
             try:
                 output_path = os.path.join(self.inference_dir, f"checkpoint-{step}.wav")
-                self._generate_sample_full(weights_path, output_path)
+                self._generate_sample_full(checkpoint_dir, weights_path, output_path)
             except Exception as e:
-                logger.error(f"An error occurred during inference (Step: {step}): {e}", exc_info=True)
+                logger.error(f"Error during inference (step {step}): {e}", exc_info=True)
 
     # -------------------------------------------------------------------------
     # LoRA inference
@@ -110,12 +111,11 @@ class InferenceCallback(TrainerCallback):
         new_t3 = None
 
         try:
-            # Rebuild the base T3 with resized vocab
+            # Rebuild the base T3 with the resized vocab
             temp_original = EngineClass.from_local(self.config.model_dir, device="cpu")
             pretrained_state = temp_original.t3.state_dict()
-            original_config = temp_original.t3.hp
+            new_config = temp_original.t3.hp
 
-            new_config = original_config
             new_config.text_tokens_dict_size = self.config.new_vocab_size
             if hasattr(new_config, "use_cache"):
                 new_config.use_cache = False
@@ -162,7 +162,7 @@ class InferenceCallback(TrainerCallback):
             wav_np = wav.squeeze().cpu().numpy()
             trimmed_wav = trim_silence_with_vad(wav_np, inference_engine.sr)
             sf.write(output_path, trimmed_wav, inference_engine.sr)
-            logger.info(f"Example saved: {output_path}")
+            logger.info(f"Sample saved: {output_path}")
 
         except Exception as e:
             logger.error(f"LoRA inference callback failed: {e}", exc_info=True)
@@ -178,7 +178,7 @@ class InferenceCallback(TrainerCallback):
     # -------------------------------------------------------------------------
     # Full fine-tune inference
     # -------------------------------------------------------------------------
-    def _generate_sample_full(self, checkpoint_path: str, output_path: str):
+    def _generate_sample_full(self, checkpoint_dir: str, weights_path: str, output_path: str):
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         is_turbo = getattr(self.config, "is_turbo", False)
@@ -195,37 +195,21 @@ class InferenceCallback(TrainerCallback):
         if is_turbo and hasattr(new_t3.tfmr, "wte"):
             del new_t3.tfmr.wte
 
-        if checkpoint_path.endswith(".safetensors"):
-            state_dict = load_file(checkpoint_path)
+        if weights_path.endswith(".safetensors"):
+            state_dict = load_file(weights_path)
         else:
-            state_dict = torch.load(checkpoint_path, map_location="cpu")
+            state_dict = torch.load(weights_path, map_location="cpu")
 
-        clean_state_dict = {}
-        for k, v in state_dict.items():
-            k_clean = k.replace("module.", "").replace("model.", "").replace("t3.", "")
-            if k_clean.startswith("t3."):
-                clean_state_dict[k_clean.replace("t3.", "")] = v
-            elif not any(x in k_clean for x in ["s3gen", "ve.", "tokenizer"]):
-                clean_state_dict[k_clean] = v
-
-        missing_keys, unexpected_keys = new_t3.load_state_dict(clean_state_dict, strict=False)
-
-        critical_missing = [k for k in missing_keys if "tfmr.layers" in k]
-        if len(critical_missing) > 0:
-            logger.error("[CRITICAL ERROR] Model weights COULD NOT BE LOADED!")
-            logger.error(f"Number of missing keys: {len(missing_keys)}")
-            logger.error(f"Examples of missing keys: {critical_missing[:3]}")
-            logger.error("The sound produced will be 100% NOISE. Check your checkpoint saving method.")
-        elif len(missing_keys) > 0:
-            non_wte_missing = [k for k in missing_keys if "wte" not in k]
-            if non_wte_missing:
-                logger.warning(f"Some weights are missing ({len(non_wte_missing)} keys): {non_wte_missing[:3]}...")
-            else:
-                logger.info("Weights loaded successfully (WTE missing is normal for Turbo).")
-        else:
-            logger.info("All weights loaded completely and successfully.")
+        # Raises if any weight is missing (the sample would be noise)
+        load_t3_state(new_t3, state_dict)
+        logger.info("All weights loaded successfully.")
 
         tts_engine.t3 = new_t3
+
+        model_path = os.path.join(checkpoint_dir, self.config.full_ft_filename)
+        save_file(tts_engine.t3.state_dict(), model_path)
+        logger.info(f"Full T3 model saved to: {model_path}")
+
         tts_engine.t3.to(device).eval()
         tts_engine.s3gen.to(device).eval()
         tts_engine.ve.to(device).eval()
@@ -249,10 +233,9 @@ class InferenceCallback(TrainerCallback):
         wav_np = wav.squeeze().cpu().numpy()
         trimmed_wav = trim_silence_with_vad(wav_np, tts_engine.sr)
         sf.write(output_path, trimmed_wav, tts_engine.sr)
-        logger.info(f"Example saved: {output_path}")
+        logger.info(f"Sample saved: {output_path}")
 
         del tts_engine
         del new_t3
         del state_dict
-        del clean_state_dict
         torch.cuda.empty_cache()

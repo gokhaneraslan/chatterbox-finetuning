@@ -22,34 +22,48 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger = setup_logger("ChatterboxFinetune")
 
 
+def count_params(model, trainable_only=False):
+    return sum(p.numel() for p in model.parameters() if (p.requires_grad or not trainable_only))
+
+
 def main():
 
     cfg = TrainConfig()
 
+    mode_name = "CHATTERBOX-NANO" if cfg.is_nano else "CHATTERBOX-TURBO" if cfg.is_turbo else "CHATTERBOX-TTS"
     logger.info("--- Starting Chatterbox Finetuning ---")
-    logger.info(f"Mode: {'CHATTERBOX-TURBO' if cfg.is_turbo else 'CHATTERBOX-TTS'}")
+    logger.info(f"Mode: {mode_name}")
     logger.info(f"Training Strategy: {'LoRA' if cfg.is_lora else 'Full Fine-Tune'}")
 
     # 0. CHECK MODEL FILES
-    mode_check = "chatterbox_turbo" if cfg.is_turbo else "chatterbox"
-    if not check_pretrained_models(mode=mode_check):
+    mode_check = "chatterbox_nano" if cfg.is_nano else "chatterbox_turbo" if cfg.is_turbo else "chatterbox"
+    if not check_pretrained_models(model_dir=cfg.model_dir, mode=mode_check):
         sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1. SELECT THE CORRECT ENGINE CLASS
-    if cfg.is_turbo:
-        EngineClass = ChatterboxTurboTTS
-    else:
-        EngineClass = ChatterboxTTS
+    EngineClass = ChatterboxTurboTTS if cfg.is_turbo else ChatterboxTTS
 
     logger.info(f"Device: {device}")
     logger.info(f"Model Directory: {cfg.model_dir}")
 
-    # 2. LOAD ORIGINAL MODEL TEMPORARILY
+    # 2. LOAD ORIGINAL MODEL TEMPORARILY (CPU first to save VRAM)
     logger.info("Loading original model to extract weights...")
-    # Loading on CPU first to save VRAM
     tts_engine_original = EngineClass.from_local(cfg.model_dir, device="cpu")
+
+    if cfg.is_turbo:
+        # The folder content must match the config flags
+        expected = "Nano" if cfg.is_nano else "Turbo"
+        found = tts_engine_original.model_label
+        if found != expected:
+            raise RuntimeError(f"Config expects {expected}, but '{cfg.model_dir}' contains {found}.")
+
+        tok_len = len(tts_engine_original.tokenizer)
+        if tok_len != cfg.new_vocab_size:
+            raise ValueError(f"Tokenizer len {tok_len} != new_vocab_size {cfg.new_vocab_size}. Check the output of setup.py.")
+
+    logger.info(f"Base T3 params: {count_params(tts_engine_original.t3) / 1e6:.1f}M")
 
     pretrained_t3_state_dict = tts_engine_original.t3.state_dict()
     original_t3_config = tts_engine_original.t3.hp
@@ -73,9 +87,11 @@ def main():
     new_t3_model = resize_and_load_t3_weights(new_t3_model, pretrained_t3_state_dict)
 
     if cfg.is_turbo:
-        logger.info("Turbo Mode: Removing backbone WTE layer...")
+        logger.info(f"{'Nano' if cfg.is_nano else 'Turbo'} Mode: Removing backbone WTE layer...")
         if hasattr(new_t3_model.tfmr, "wte"):
             del new_t3_model.tfmr.wte
+
+    logger.info(f"New T3 text_emb: {tuple(new_t3_model.text_emb.weight.shape)}")
 
     # Clean up memory
     del tts_engine_original
@@ -99,16 +115,17 @@ def main():
 
         for param in tts_engine_new.t3.parameters():
             param.requires_grad = False
-            
+
         from peft import LoraConfig, get_peft_model
 
-        logger.info(f"LoRA Target Modules: {cfg.lora_target_modules}")
+        target_modules = cfg.turbo_lora_target_modules if cfg.is_turbo else cfg.lora_target_modules
+        logger.info(f"LoRA Target Modules: {target_modules}")
         logger.info(f"Modules to Full Train (Embeddings): {cfg.lora_modules_to_save}")
 
         peft_config = LoraConfig(
             r=cfg.lora_r,
             lora_alpha=cfg.lora_alpha,
-            target_modules=cfg.turbo_lora_target_modules if cfg.is_turbo else cfg.lora_target_modules,
+            target_modules=target_modules,
             lora_dropout=0.05,
             bias="none",
             modules_to_save=cfg.lora_modules_to_save,
@@ -116,7 +133,6 @@ def main():
 
         tts_engine_new.t3 = get_peft_model(tts_engine_new.t3, peft_config)
         tts_engine_new.t3.print_trainable_parameters()
-        
 
     else:
         # --- FULL FINE-TUNE PATH ---
@@ -124,6 +140,7 @@ def main():
         tts_engine_new.t3.train()
         for param in tts_engine_new.t3.parameters():
             param.requires_grad = True
+        logger.info(f"Trainable params: {count_params(tts_engine_new.t3, trainable_only=True) / 1e6:.1f}M")
 
     # 7. PREPROCESSING
     if cfg.preprocess:
@@ -144,13 +161,12 @@ def main():
 
     trainer_callbacks = []
     if cfg.is_inference:
-        inference_cb = InferenceCallback(cfg)
-        trainer_callbacks.append(inference_cb)
+        trainer_callbacks.append(InferenceCallback(cfg))
 
     model_wrapper = ChatterboxTrainerWrapper(tts_engine_new.t3)
 
     if cfg.is_turbo:
-        logger.info("Using Turbo Data Collator (with dynamic prompt masking)")
+        logger.info("Using Turbo/Nano Data Collator (with dynamic prompt masking)")
         selected_collator = data_collator_turbo
     else:
         logger.info("Using Standard Data Collator")
@@ -200,8 +216,7 @@ def main():
         logger.info("NOTE: This adapter contains both LoRA weights AND the new resized embeddings.")
     else:
         # Save full model weights as safetensors
-        filename = "t3_turbo_finetuned.safetensors" if cfg.is_turbo else "t3_finetuned.safetensors"
-        final_model_path = os.path.join(cfg.output_dir, filename)
+        final_model_path = os.path.join(cfg.output_dir, cfg.full_ft_filename)
         save_file(tts_engine_new.t3.state_dict(), final_model_path)
         logger.info(f"Full model saved to: {final_model_path}")
 
