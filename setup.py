@@ -207,10 +207,21 @@ def main():
         dest_path = os.path.join(DEST_DIR, filename)
         download_file(url, dest_path)
 
-    # 3. Merge tokenizer (Turbo/Nano only)
+    # 3. Tokenizer (Turbo/Nano only): merge only when extend_vocab=True
     if cfg.is_turbo:
         label = "NANO" if cfg.is_nano else "TURBO"
-        new_vocab_size = merge_and_save_turbo_tokenizer()
+
+        if cfg.extend_vocab:
+            new_vocab_size = merge_and_save_turbo_tokenizer()
+        else:
+            new_vocab_size = len(AutoTokenizer.from_pretrained(DEST_DIR))
+            print("Vocab extension disabled: keeping the original tokenizer.")
+
+            # A tokenizer merged by an earlier run would silently be reused here
+            if new_vocab_size != 50276:
+                print(f"ERROR: Expected the original tokenizer (50276 tokens) but found {new_vocab_size}.")
+                print(f"A merged tokenizer is already in '{DEST_DIR}'. Delete the folder and run setup.py again.")
+                sys.exit(1)
 
         if new_vocab_size > 0:
             print("\n" + "=" * 60)

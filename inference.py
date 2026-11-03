@@ -31,7 +31,7 @@ FINETUNED_WEIGHTS = os.path.join(OUTPUT_DIR, cfg.full_ft_filename)  # Full fine-
 if IS_TURBO:
     PARAMS = {
         "temperature": 0.4,
-        "repetition_penalty": 1.2,
+        "repetition_penalty": 2.0,
     }
 else:
     PARAMS = {

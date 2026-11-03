@@ -7,22 +7,31 @@ class TrainConfig:
     is_turbo: bool = True  # True: Turbo (GPT-2 medium). False: Standard.
     is_nano: bool = True   # True: Nano (GPT-2 small). Requires is_turbo=True.
     
+    extend_vocab: bool = False  # True: Extend the tokenizer vocab. False: Use the base model vocab.
+    
+    # Separate folders per variant (the merge overwrites tokenizer files in model_dir)
+    _sfx = ("_nano" if extend_vocab else "_nano_bpe") if is_nano else ("" if extend_vocab else "_bpe") if is_turbo else ""
+
     # --- Training strategy ---
-    is_lora: bool = True  # True: LoRA (recommended for < 10h data). False: full fine-tune.
+    is_lora: bool = False  # True: LoRA (recommended for < 10h data). False: full fine-tune.
     
     # --- Paths ---
     # Directory where setup.py downloads the base model files
-    model_dir: str = "./pretrained_models_nano" if is_nano else "./pretrained_models"
+    model_dir: str = f"./pretrained_models{_sfx}"
+    
     # Path to your metadata CSV (Format: ID|RawText|NormText)
     #csv_path: str = "./MyTTSDataset/metadata.csv"
     metadata_path: str = "./MyTTSDataset/metadata_final.json"
+    
     # Directory containing WAV files
-    wav_dir: str = "./maya1_dataset/wavs"
+    wav_dir: str = "./MyTTSDataset/wavs"
     #wav_dir: str = "./FileBasedDataset"
-    preprocessed_dir = "./MyTTSDataset/preprocess_nano" if is_nano else "./MyTTSDataset/preprocess"
-    #preprocessed_dir = "./FileBasedDataset/preprocess"
+    
+    preprocessed_dir = f"./preprocess{_sfx}"
+    #preprocessed_dir = "./FileBasedDataset/preprocess{_sfx}"
+    
     # Output directory for the finetuned model
-    output_dir: str = "./chatterbox_output_nano" if is_nano else "./chatterbox_output"
+    output_dir: str = f"./chatterbox_output{_sfx}"
     
     is_inference = True
     inference_prompt_path: str = "./speaker_reference/2.wav"
@@ -41,13 +50,13 @@ class TrainConfig:
 
     # --- Vocabulary ---
     # Must equal len(tokenizer). Turbo/Nano: use the value printed by setup.py.
-    new_vocab_size: int = 52274 if is_nano else 52260 if is_turbo else 2454  # Turbo/Nano: use the value printed by setup.py
+    new_vocab_size: int = (52274 if extend_vocab else 50276) if is_turbo else 2454
 
     # --- Hyperparameters ---
-    batch_size: int = 32   # Adjust to VRAM
-    grad_accum: int = 1    # Effective batch = batch_size * grad_accum
+    batch_size: int = 8   # Adjust to VRAM
+    grad_accum: int = 2    # Effective batch = batch_size * grad_accum
     learning_rate: float = 1e-4 if is_lora else 1e-5
-    num_epochs: int = 10 if is_lora else 30
+    num_epochs: int = 10 if is_lora else 20
     save_steps: int = 500
     logging_steps: int = 100
     save_total_limit: int = 5
