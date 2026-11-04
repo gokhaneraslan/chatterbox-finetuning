@@ -5,15 +5,15 @@ from typing import List
 class TrainConfig:
     # --- Model selection ---
     is_turbo: bool = True  # True: Turbo (GPT-2 medium). False: Standard.
-    is_nano: bool = True   # True: Nano (GPT-2 small). Requires is_turbo=True.
+    is_nano: bool = False   # True: Nano (GPT-2 small). Requires is_turbo=True.
     
-    extend_vocab: bool = False  # True: Extend the tokenizer vocab. False: Use the base model vocab.
+    extend_vocab: bool = True  # True: Extend the tokenizer vocab. False: Use the base model vocab.
     
     # Separate folders per variant (the merge overwrites tokenizer files in model_dir)
-    _sfx = ("_nano" if extend_vocab else "_nano_bpe") if is_nano else ("" if extend_vocab else "_bpe") if is_turbo else ""
+    _sfx = ("_nano" if extend_vocab else "_nano_bpe") if is_nano else ("_turbo" if extend_vocab else "_turbo_bpe") if is_turbo else ""
 
     # --- Training strategy ---
-    is_lora: bool = False  # True: LoRA (recommended for < 10h data). False: full fine-tune.
+    is_lora: bool = True  # True: LoRA (recommended for < 10h data). False: full fine-tune.
     
     # --- Paths ---
     # Directory where setup.py downloads the base model files

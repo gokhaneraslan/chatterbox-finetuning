@@ -93,17 +93,14 @@ def download_file(url, dest_path):
 
 
 def merge_and_save_turbo_tokenizer():
-    """
-    Merges the base tokenizer with the multilingual grapheme vocab and
-    overwrites the tokenizer files in DEST_DIR.
-    Nano: base is the original Nano tokenizer (keeps paralinguistic tag IDs).
-    Turbo/Standard: base is plain GPT-2, as in the original kit.
-    """
+    """Merges the multilingual grapheme vocab into the model's own tokenizer
+    (Turbo and Nano share the same one) and overwrites the tokenizer files in DEST_DIR.
+    The paralinguistic tag IDs stay unchanged."""
+    
     print("\n--- Vocab Merging Begins ---")
 
     try:
-        base_src = DEST_DIR if cfg.is_nano else "gpt2-medium"
-        base_tokenizer = AutoTokenizer.from_pretrained(base_src)
+        base_tokenizer = AutoTokenizer.from_pretrained(DEST_DIR)
     except Exception as e:
         print(f"ERROR: The base tokenizer could not be loaded -> {e}")
         return 0
@@ -111,15 +108,14 @@ def merge_and_save_turbo_tokenizer():
     initial_len = len(base_tokenizer)
     print(f"   Original Size: {initial_len}")
 
-    # Nano tags must keep their original IDs (also guards against a tokenizer merged earlier on plain GPT-2)
-    nano_tag_ids = {"[laugh]": 50275, "[chuckle]": 50274, "[cough]": 50270}
-    if cfg.is_nano:
-        wrong = {t: base_tokenizer.convert_tokens_to_ids(t) for t, i in nano_tag_ids.items()
-                 if base_tokenizer.convert_tokens_to_ids(t) != i}
-        if wrong:
-            print(f"ERROR: Base tokenizer is not the original Nano tokenizer: {wrong}")
-            print(f"Delete '{DEST_DIR}' and run setup.py again.")
-            return 0
+
+    TAG_IDS = {"[laugh]": 50275, "[chuckle]": 50274, "[cough]": 50270}  # identical in Turbo and Nano
+    wrong = {t: base_tokenizer.convert_tokens_to_ids(t) for t, i in TAG_IDS.items()
+            if base_tokenizer.convert_tokens_to_ids(t) != i}
+    if wrong:
+        print(f"ERROR: Base tokenizer is not the original Turbo/Nano tokenizer: {wrong}")
+        print(f"Delete '{DEST_DIR}' and run setup.py again.")
+        return 0
 
     custom_vocab_path = os.path.join(DEST_DIR, "grapheme_mtl_merged_expanded_v1.json")
     print(f"Loading: Custom Vocab ({custom_vocab_path})")
@@ -142,10 +138,10 @@ def merge_and_save_turbo_tokenizer():
     print(f"Saving: Writing the merged tokenizer to '{DEST_DIR}'...")
     base_tokenizer.save_pretrained(DEST_DIR)
 
-    # Tags must stay single tokens (Nano: with their original IDs)
+    # Tags must stay single tokens (with their original IDs)
     tag_ids = {t: base_tokenizer.convert_tokens_to_ids(t) for t in CHECK_TAGS}
     single = all(len(base_tokenizer.encode(t, add_special_tokens=False)) == 1 for t in CHECK_TAGS)
-    ids_ok = (not cfg.is_nano) or all(tag_ids[t] == nano_tag_ids[t] for t in CHECK_TAGS)
+    ids_ok = all(tag_ids[t] == TAG_IDS[t] for t in CHECK_TAGS)
 
     if single and ids_ok:
         print(f"Tags OK: {tag_ids}")
