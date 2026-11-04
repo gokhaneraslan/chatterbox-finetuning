@@ -1,329 +1,380 @@
-***
+# 🎙️ Chatterbox Fine-Tuning & LoRA Toolkit (Nano, Turbo & Standard)
 
-# Chatterbox: Fine-Tuning & LoRA Inference Kit 🎙️
+[![GitHub Stars](https://img.shields.io/github/stars/gokhaneraslan/chatterbox-finetuning?style=social)](https://github.com/gokhaneraslan/chatterbox-finetuning)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/LICENSE-2.0)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.6-orange.svg)](https://pytorch.org/)
 
-A modular, highly efficient infrastructure for **fine-tuning** both **Chatterbox TTS (Standart)** and **Chatterbox Turbo** models with your own dataset and generating high-quality speech synthesis.
+A modular fine-tuning and LoRA toolkit for the **Resemble AI Chatterbox** model family:
 
-This kit is specially designed to support **new languages** and voices by intelligently extending the model's vocabulary. With the newly added **LoRA (Low-Rank Adaptation)** support, you can now train high-quality voices faster and with significantly less VRAM.
+- **Chatterbox-Nano** 🚀 *(smallest model, GPT-2 small backbone, built for fast low-memory inference)*
+- **Chatterbox-Turbo** ⚡ *(GPT-2 medium backbone)*
+- **Chatterbox Standard** 🌐 *(Llama backbone)*
 
-> ### 💡 Developer's Recommendation: Training the Turbo Model
-> You can train both the **Standart** and **Turbo** models using either *Full Fine-Tuning* or *LoRA*. 
-> 
-> If you are aiming to fine-tune the **Turbo model**, you may want to try a **Full Fine-Tune** first. However, the Turbo architecture's weights can sometimes be quite stubborn to adapt. If you start hearing static noise, hallucinations, or meaningless sounds during training (which you can easily monitor via the automatic `inference_callback` audio samples), **we strongly recommend switching to LoRA (`is_lora = True`)**.
-> 
-> *I have personally trained the Turbo model using LoRA and achieved highly successful, stable results! The LoRA matrices act as a great stabilizer for the base model.*
->
-> **The Ultimate Workflow:** Train your model with LoRA, test the adapter directly using `inference.py`, and once you are 100% satisfied with the voice quality, run `python merge_lora.py`. This will bake the LoRA weights into the base model and give you a single, standalone `.safetensors` file ready for production!
+Train a voice or a new language with **LoRA (Low-Rank Adaptation)** or a **Full Fine-Tune**. The kit can keep the original tokenizer or extend it with a multilingual grapheme set, and it renders audio samples while training so you can listen to every checkpoint.
 
 ---
 
-## 🧠 Training Strategies: LoRA vs. Full Fine-Tune
+## ⚡ Models and Hardware
 
-This repository allows you to choose your training strategy using the `is_lora` flag in `src/config.py`. 
+| Model | Parameters (model card) | Backbone | Tokenizer |
+|---|---|---|---|
+| **Nano** 🚀 | 110M | GPT-2 small | GPT-2 BPE + tags (50,276) |
+| **Turbo** ⚡ | 350M | GPT-2 medium | GPT-2 BPE + tags (50,276) |
+| **Standard** 🌐 | 500M | Llama | Grapheme (2,454) |
 
-### 1. LoRA Mode (`is_lora = True`) - 🌟 HIGHLY RECOMMENDED
-*   **What is it?** LoRA (Low-Rank Adaptation) freezes the massive base model and only trains tiny adapter layers alongside the new language embeddings.
-*   **Best for:** Datasets that are **10 hours or less** in total duration (which covers 95% of custom voice cloning use cases).
-*   **Benefits:** Prevents the model from forgetting its base knowledge (catastrophic forgetting), trains significantly faster, prevents overfitting on small datasets, and uses **~60% less VRAM**.
-*   **Output:** Saves a lightweight adapter to the `new_lang_adapter` folder instead of a multi-gigabyte model file.
+Notes:
+- The parameter column quotes the model cards. This kit measures about **179M** parameters for the Nano T3 (including its embedding tables), so use the measured number when you plan memory.
+- Nano and Turbo share the tokenizer and the speech decoder file. Nano only differs in the smaller T3 backbone and its own T3 checkpoint.
+- Resemble AI's model card describes Nano as running about 3x faster than realtime on an 8-core CPU.
+- The Standard model downloaded by `setup.py` is the original `t3_cfg` checkpoint; the kit swaps in a 23-language grapheme tokenizer for fine-tuning new languages.
 
-### 2. Full Fine-Tune (`is_lora = False`)
-*   **What is it?** Unfreezes and updates every single weight inside the T3 Transformer model.
-*   **Best for:** Massive, studio-grade datasets that are **strictly larger than 10 hours** where you want to completely overwrite the model's fundamental acoustic understanding.
-*   **Drawbacks:** Requires massive GPU VRAM, takes much longer to train, and risks ruining the base model's voice quality if the dataset is too small.
-
----
-
-## ⚠️ Understanding the Two Modes: Standart vs. Turbo
-
-This repository operates in two distinct modes, controlled by the `is_turbo` setting in `src/config.py`. Please decide which mode you need before you begin.
-
-### 1. Standart Mode (`is_turbo = False`)
-*   **Architecture:** Llama-based.
-*   **Tokenizer:** **Grapheme (character) based.** The `tokenizer.json` downloaded by `setup.py` contains a small, efficient vocabulary (~2,454 tokens) covering 23 languages.
-*   **Best for:** Training a model with full control over a specific language from a more fundamental level.
-
-### 2. Turbo Mode (`is_turbo = True`)
-*   **Architecture:** GPT-2 based.
-*   **Tokenizer:** **BPE-based.** It starts with a large, powerful English vocabulary (~50,000+ tokens).
-*   **Smart Merging:** When you run `setup.py`, this large vocabulary is **automatically extended** with our multi-language grapheme set.
-*   **Best for:** Leveraging a strong English base for faster, high-quality fine-tuning on other languages.
+**VRAM:** Memory usage is driven by audio sequence length. The Nano model was trained on a 16 GB VRAM GPU with `batch_size = 8` and `grad_accum = 2`. For the Turbo and Standard models, a 24 GB VRAM GPU is recommended using a similar batch configuration.
 
 ---
 
-## ⚠️ **CRITICAL: Switching Between Training Modes**
+## 💡 Key Features
 
-If you plan to switch between **Standard Mode** (`is_turbo = False`) and **Turbo Mode** (`is_turbo = True`), you **MUST** completely delete the `pretrained_models` directory and the preprocessed_dir directory created with the `preprocess = True` operation before running the `setup.py` file again.
-
-The setup script replaces the token files in place. If you run the setup for Standard mode after setting up for Turbo (or vice versa), the token files will become corrupted and cause errors that are difficult to debug during training.
-
-**Correct Workflow for Changing Modes:**
-
-1. **DELETE the entire `pretrained_models` folder.**
-
-```bash
-# On Linux or macOS
-rm -rf pretrained_models
-
-# On Windows (in Command Prompt)
-rmdir /s /q pretrained_models
-```
-2. **Update** the `src/config.py` file, setting the `is_turbo` flag to your desired new mode and setting `preprocess = True` if it is False.
-
-3. **RUN setup.py again** to download and prepare the correct files for the new mode.
-
-```bash
-python setup.py
-```
-4. **Update** the `new_vocab_size` value in the `src/config.py` file with the new value provided by the setup script. Also ensure `preprocess = True`.
+1. **One toolkit for three models.** Switch between Nano, Turbo and Standard with two flags.
+2. **Selective vocabulary extension (`extend_vocab`).** Keep the original tokenizer or merge a multilingual grapheme set into it.
+3. **Paralinguistic tags.** Nano and Turbo tokenizers contain tags such as `[laugh]`, `[chuckle]` and `[cough]`. Their token IDs are preserved in both vocabulary modes.
+4. **Three dataset formats.** JSON, LJSpeech CSV and file-based (`.wav` + `.txt`).
+5. **Separate folders per variant.** Model, preprocessed data and output folders get a suffix derived from your flags, so experiments do not overwrite each other.
+6. **Built-in safety checks.** Mismatched model folders, tokenizer sizes and preprocessed data stop with a clear error instead of silently training on bad data.
+7. **Live audio monitoring.** An inference callback renders a `.wav` at every checkpoint, trimmed with **Silero VAD**.
 
 ---
 
-## ⚠️ CRITICAL INFORMATION (Please Read)
+## 🤖 Choosing the Model
 
-### 0. Preprocessing is Mandatory
-This repository uses an **offline preprocessing** strategy to maximize training speed. This script processes all audio files, extracts speaker embeddings and acoustic tokens, and saves them as `.pt` files.
+Set the model in `src/config.py`:
 
-### 1. Tokenizer and Vocab Size (Most Important)
-Chatterbox uses a grapheme-based (character-level) tokenizer. The `tokenizer.json` file downloaded by `setup.py` includes support for **23 languages** from the original Chatterbox repository, covering most common characters across multiple languages.
+| Model | `is_turbo` | `is_nano` |
+|---|:---:|:---:|
+| Nano | `True` | `True` |
+| Turbo | `True` | `False` |
+| Standard | `False` | `False` |
 
-*   **Default Support:** The provided tokenizer already includes characters for English, Turkish, French, German, Spanish, and 18+ other languages
-*   **When to customize:** If your target language has special characters not covered in the default tokenizer, you can create a custom `tokenizer.json`
-*   **Examples of special characters by language:**
-    *   Turkish: `ç, ğ, ş, ö, ü, ı`
-    *   French: `é, è, ê, à, ù, ç`
-    *   German: `ä, ö, ü, ß`
-    *   Spanish: `ñ, á, é, í, ó, ú`
-*   **Critical:** The `new_vocab_size` variable in `src/config.py` **must exactly match** the total number of tokens in your `tokenizer.json` file
-*   **Default vocab size:** Check the downloaded `tokenizer.json` to see the exact token count, then set `new_vocab_size` accordingly.
+`is_nano = True` requires `is_turbo = True`.
 
-### 2. Audio Sample Rates
-*   **Training (Input):** Chatterbox's encoder and T3 module work with **16,000 Hz (16kHz)** audio. Even if your dataset uses different rates, `dataset.py` automatically resamples to 16kHz.
-*   **Output (Inference):** The model's vocoder generates audio at **24,000 Hz (24kHz)**.
+Nano is an English base model. Adapting it to another language (such as Turkish) has been tested and works well, but results depend on the language and data quality. We recommend a short pilot run on a subset before a full training.
 
 ---
 
-## 📂 Folder Structure
+## 🔤 Vocabulary Modes (`extend_vocab`)
+
+For Turbo and Nano, `extend_vocab` decides what `setup.py` does with the tokenizer. It has no effect in Standard mode.
+
+| Setting | What `setup.py` does | `new_vocab_size` |
+|---|---|---|
+| `extend_vocab = False` | Keeps the original tokenizer. No tokens are added. | 50276 |
+| `extend_vocab = True` | Merges the multilingual grapheme set into the original tokenizer. | 52274 |
+
+`new_vocab_size` must equal `len(tokenizer)`. `setup.py` prints the exact value at the end, and the training scripts stop with an error if config and tokenizer disagree.
+
+**What the merge changes (observed on Nano):**
+- The merge starts from the model's own tokenizer, so the tag tokens keep their IDs. `setup.py` verifies this and prints `Tags OK`.
+- Text is split into smaller pieces. On one Turkish dataset the mean text length grew from 94 to 147 tokens, and English words are split too (for example `Hello` becomes `H`, `el`, `lo`).
+- 1,998 new embedding rows are created, initialized with the mean of the existing rows.
+
+
+**Recommendation:** start with `extend_vocab = False`. Use `True` only if your language has characters or text behavior the original tokenizer handles poorly. If you can, train both on the same subset and compare listening samples; loss values are not comparable across modes because the token counts differ.
+
+**Tags after fine-tuning:** a typical TTS dataset contains no tags, so fine-tuning can weaken them. Test with an English prompt such as `Hi [laugh] there.` after training.
+
+---
+
+## 🗂️ Variants and Folders
+
+The model, preprocessed data, and output folders automatically receive an isolated suffix based on your active configuration flags:
+
+| Variant | Flags | Suffix | `new_vocab_size` | Folder Example |
+|---|---|---|---|---|
+| **Standard** | `is_turbo=False` | *(none)* | 2454 | `pretrained_models/` |
+| **Turbo (Extended)** | `is_turbo=True, is_nano=False, extend_vocab=True` | `_turbo` | 52274 | `pretrained_models_turbo/` |
+| **Turbo (Original BPE)** | `is_turbo=True, is_nano=False, extend_vocab=False` | `_turbo_bpe` | 50276 | `pretrained_models_turbo_bpe/` |
+| **Nano (Extended)** | `is_turbo=True, is_nano=True, extend_vocab=True` | `_nano` | 52274 | `pretrained_models_nano/` |
+| **Nano (Original BPE)** | `is_turbo=True, is_nano=True, extend_vocab=False` | `_nano_bpe` | 50276 | `pretrained_models_nano_bpe/` |
+
+Because every variant maintains its own isolated namespace, **different configurations will never overwrite or collide with each other**. You can download models and run experiments across multiple variants side by side without needing to delete existing folders.
+
+> 💡 **Note on :** setup.py aborts if it finds a merged tokenizer in a folder where extend_vocab = False (for example after copying folders by hand). Delete that folder and run it again.
+
+---
+
+## 📁 Repository Structure
 
 ```text
-chatterbox-finetune/
-├── pretrained_models/                             # setup.py downloads required models here
-├── MyTTSDataset/                                  # Your custom dataset in LJSpeech format
-├── FileBasedDataset/                              # Your custom dataset in File-Based format
-├── speaker_reference/                             # Speaker reference audio files
+├── pretrained_models*/          # Base weights and tokenizer (one folder per variant)
+├── preprocess*/                 # Precomputed tokens and speaker embeddings (preprocessed_dir)
+├── chatterbox_output*/          # Adapters, checkpoints and inference samples (output_dir)
+├── speaker_reference/           # Reference audio for cloning and the callback
+├── MyTTSDataset/                # Example dataset folder (metadata + wavs)
 ├── src/
-│   ├── config.py                                  # All settings and hyperparameters
-│   ├── dataset.py                                 # Data loading and processing
-│   ├── model.py                                   # Model weight transfer and training wrapper
-│   ├── inference_callback.py                      # Callbacks for checking audio during training
-│   ├── preprocess_*.py                            # Preprocessing scripts (LJSpeech, JSON, etc.)
-│   └── utils.py                                   # Logger and VAD utilities
-├── train.py                                       # Main training script (Handles LoRA & Full)
-├── inference.py                                   # Smart speech synthesis script
-├── merge_lora.py                                  # Bakes LoRA weights into the base model
-├── setup.py                                       # Setup script for downloading models
-├── requirements.txt                               # Required dependencies
-└── README.md                                      # This file
+│   ├── chatterbox_/             # Vendored Chatterbox model code (Standard, Turbo, Nano)
+│   ├── config.py                # All settings and hyperparameters
+│   ├── dataset.py               # Dataset loading and collators
+│   ├── model.py                 # Vocab-resizing weight transfer and training wrapper
+│   ├── inference_callback.py    # Audio sample at every checkpoint
+│   ├── preprocess_*.py          # Preprocessors (LJSpeech, JSON, file-based)
+│   └── utils.py                 # Logger, Silero VAD, model-file and tokenizer checks
+├── train.py                     # Training (HuggingFace Trainer + PEFT)
+├── inference.py                 # Speech synthesis
+├── merge_lora.py                # Bakes LoRA weights into a standalone file
+├── setup.py                     # Downloads models and prepares the tokenizer
+└── requirements.txt
 ```
 
 ---
 
-## 🚀 Installation
+## 🛠️ Installation
 
-### 1. Install Dependencies
-Requires Python 3.8+ and GPU (recommended):
-
-**Install FFmpeg (Required):**
+### 1. FFmpeg (required)
 ```bash
-# on Ubuntu or Debian
-sudo apt update && sudo apt install ffmpeg
+# Ubuntu / Debian
+sudo apt update && sudo apt install -y ffmpeg
 
-# on Arch Linux
+# Arch Linux
 sudo pacman -S ffmpeg
 
-# on MacOS using Homebrew (https://brew.sh/)
+# macOS (Homebrew)
 brew install ffmpeg
 
-# on Windows using Chocolatey (https://chocolatey.org/)
+# Windows (Chocolatey / Scoop)
 choco install ffmpeg
-
-# on Windows using Scoop (https://scoop.sh/)
 scoop install ffmpeg
 ```
 
-**Install Python Dependencies:**
+### 2. Python environment
+Python 3.10 or newer (3.11 is what upstream Chatterbox is developed on). Check `requirements.txt` for the supported PyTorch versions.
 ```bash
 git clone https://github.com/gokhaneraslan/chatterbox-finetuning.git
 cd chatterbox-finetuning
 pip install -r requirements.txt
 ```
 
-### 2. Download & Prepare Models (CRITICAL)
-This multi-step process prepares all necessary files based on your chosen mode. This script downloads the necessary base models (`ve`, `s3gen`, `t3`) and default tokenizer. **Must be run before training.**
+---
 
-**Step 2.1: Choose Your Mode**
-Open `src/config.py` and set the `is_turbo` variable to `True` or `False`.
+## ⚙️ Configuration and Model Download
 
-**Step 2.2: Run the Setup Script**
-This command will download the correct model files. If Turbo mode is enabled, it will also **automatically merge the tokenizers for you.**
+All settings live in **`src/config.py`**.
+
+**Step 1: choose your variant.**
+```python
+is_turbo: bool = True        # False: Standard
+is_nano: bool = True         # True: Nano (requires is_turbo=True)
+extend_vocab: bool = False   # Turbo/Nano only (see "Vocabulary Modes")
+```
+
+**Step 2: download the models and prepare the tokenizer.**
 ```bash
 python setup.py
 ```
+The Hugging Face repos are public. If a download fails with 401/403, log in with `huggingface-cli login` or set the `HF_TOKEN` environment variable.
 
-**Step 2.3: Update Config (Turbo Mode ONLY)**
-If you ran the setup in Turbo mode, the script will output a final message like this:
-`Please update the 'new_vocab_size' in 'src/config.py' to the following value: 52260`
-Copy this exact number and paste it into the `new_vocab_size` variable in `src/config.py`. **Do not skip this step!**
+**Step 3: copy the vocabulary size.** `setup.py` ends with a message like:
+```text
+Please update the 'new_vocab_size' value in 'src/config.py'
+to: 50276
+```
+Set `new_vocab_size` to that number. **Do not skip this step.**
+```python
+new_vocab_size: int = (52274 if extend_vocab else 50276) if is_turbo else 2454
+```
 
 ---
 
-## 🏋️ Training (Fine-Tuning)
+## 📊 Dataset Preparation
 
-During training, the script loads the original model weights, **intelligently resizes them** for the new vocabulary size, and initializes new tokens using mean initialization from existing tokens for faster adaptation.
-
-### 1. Dataset Preparation
-
-#### Option A: Using TTS Dataset Generator (Recommended)
-We recommend using the [TTS Dataset Generator](https://github.com/gokhaneraslan/tts-dataset-generator) tool to automatically create high-quality datasets from audio or video files.
-
-**Quick Start:**
+### Option A: TTS Dataset Generator (recommended)
+Use the [TTS Dataset Generator](https://github.com/gokhaneraslan/tts-dataset-generator) to build a dataset from audio or video files:
 ```bash
-# Install the dataset generator
 git clone https://github.com/gokhaneraslan/tts-dataset-generator.git
 cd tts-dataset-generator
 pip install -r requirements.txt
 
-# Generate dataset from your audio/video file
 python main.py --file your_audio.mp4 --model large --language en --ljspeech True
 ```
-This will automatically segment audio, transcribe it via Whisper AI, and format it for the `MyTTSDataset/` folder.
+It segments the audio, transcribes it with Whisper and formats the dataset.
 
-#### Option B: Manual Dataset Creation
-Your dataset should follow the LJSpeech format with a CSV file (`filename|raw_text|normalized_text`).
+### Option B: Your own dataset
+Select the format with the flags in `src/config.py`. If several are set, the order of precedence is `ljspeech`, then `json_format`, then file-based.
 
-**Dataset Quality Requirements:**
-- Sample rate: 16kHz, 22.05kHz, or 44.1kHz (will be resampled to 16kHz automatically)
-- Format: WAV (mono or stereo - will be converted to mono automatically)
-- Duration: 3-10 seconds per segment (optimal for TTS)
-- Minimum total duration: 30+ minutes for basic training
-- Audio quality: Clean, minimal background noise
-
-### 2. Configuration
-
-**Most Important Settings:**
+**JSON** (`ljspeech = False`, `json_format = True`):
 ```python
-# In src/config.py
-
-# --- Model Selection ---
-is_turbo: bool = True  # True for Turbo, False for Normal.
-
-# --- Training Strategy (NEW) ---
-is_lora: bool = True   # True: Efficient LoRA training (Recommended for < 10h data)
-                       # False: Full Fine-Tune (High VRAM, for massive datasets)
-
-# If is_lora = True, these settings apply:
-lora_r: int = 64
-lora_alpha: int = 128
-lora_target_modules = ["c_attn", "c_proj", "c_fc", "spkr_enc"]
-lora_modules_to_save = ["text_emb", "text_head"] # Auto-trains new vocab embeddings
-
-# --- Vocabulary ---
-new_vocab_size: int = 52260 if is_turbo else 2454 
-
-# --- Dataset Format ---
-ljspeech = False       # True for metadata.csv format
-json_format = True     # True for JSON formatted datasets
-preprocess = True      # Set to False ONLY if you already preprocessed the dataset
+metadata_path = "./MyTTSDataset/metadata_final.json"
+wav_dir = "./MyTTSDataset/wavs"
+```
+Every item needs an `id` and a `text`. The audio file must be `wav_dir/{id}.wav`; other fields are ignored.
+```json
+[
+  {"id": "sample_0001", "text": "Merhaba, bu bir Chatterbox Nano testidir."}
+]
 ```
 
-### 3. Start Training
+**LJSpeech** (`ljspeech = True`): a pipe-separated CSV at `csv_path` (`filename|raw_text|norm_text`), audio in `wav_dir`.
+```text
+sample_0001|Hello, this is a test.|Hello, this is a test.
+```
+
+**File-based** (`ljspeech = False`, `json_format = False`): `wav_dir` holds `ID.wav` and `ID.txt` pairs.
+
+**Quality guidelines:**
+- WAV in any sample rate, mono or stereo (converted to 16 kHz mono automatically)
+- 3 to 15 seconds per clip works well; **never above about 34 seconds** (see "Length limits")
+- Clean audio, and text that matches what is actually said
+- 30+ minutes for a basic voice, several hours for a new language
+
+---
+
+## 🧠 Training
+
+### 1. Strategy: LoRA or Full Fine-Tune
+
+- **`is_lora = True` (recommended, especially below 10 hours of data).** Freezes the base model and trains small adapter matrices plus the text embedding tables (`lora_modules_to_save`). It reduces forgetting and VRAM use. The adapter is saved to `<output_dir>/new_lang_adapter/`. On Nano and Turbo the two embedding tables are trained in full and make up most of the trainable parameters, so the adapter folder also contains the resized embeddings.
+- **`is_lora = False`.** Updates every T3 weight. Use it for large datasets. The result is saved as `t3_nano_finetuned.safetensors` (`t3_turbo_finetuned.safetensors` / `t3_finetuned.safetensors` for the other models).
+
+> If a full fine-tune of Turbo or Nano produces static noise or hallucinations in the callback samples, switch to LoRA. `lora_r` is worth tuning; 32 to 64 is a reasonable starting range for Nano.
+
+### 2. Key settings
+```python
+# --- Training ---
+is_lora: bool = True
+lora_r: int = 32
+lora_alpha: int = 64
+turbo_lora_target_modules = ["c_attn", "c_proj", "c_fc", "spkr_enc"]    # Turbo and Nano
+lora_modules_to_save = ["text_emb", "text_head"]
+
+# --- Hardware and batch (the Nano reference run: 16 GB GPU) ---
+batch_size: int = 8
+grad_accum: int = 2          # effective batch = batch_size * grad_accum
+num_epochs: int = 10 if is_lora else 20
+save_steps: int = 500       # a checkpoint (and sample wav) every 500 steps
+
+# --- Monitoring ---
+is_inference = True          # render a sample wav at every checkpoint
+inference_prompt_path = "./speaker_reference/2.wav"
+inference_test_text = "Merhaba, sesimi geliştirmem oldukça uzun zaman aldı."
+
+# --- Dataset ---
+preprocess = True            # keep True until this variant's preprocessing has finished once
+```
+
+**Choosing `save_steps`:** a checkpoint (and, with `is_inference = True`, a sample wav) is created every `save_steps` steps. For one per epoch use `ceil(num_samples / (batch_size * grad_accum))`. Every checkpoint also stores optimizer state, so watch your disk space (`save_total_limit` keeps only the latest ones).
+
+**Reference audio:** point `inference_prompt_path` to a clean recording in your target language, **longer than 5 seconds** (shorter clips fail an assertion). A native-speaker prompt noticeably helps the samples.
+
+### 3. Launch
 ```bash
 python train.py
 ```
-*   If `is_lora = True`, your trained model will be saved inside `chatterbox_output/new_lang_adapter/`.
-*   If `is_lora = False`, your trained model will be saved as `chatterbox_output/t3_turbo_finetuned.safetensors` (or `t3_finetuned`).
+
+**What a healthy start looks like in the log:**
+- `Mode: CHATTERBOX-NANO` (or TURBO / TTS)
+- `Base T3 params` and `New T3 text_emb: (<new_vocab_size>, 768)` for Nano
+- `trainable params: ...` (mostly the two embedding tables on Turbo and Nano)
+- `Dataset loaded. Total samples: ...` matching your dataset
+- no NaN loss, and a `Sample saved: .../checkpoint-N.wav` line at every checkpoint
+
+### 🎧 Judge by listening
+The training loss is the sum of the text and speech cross-entropy of the T3 model (the speech decoder is frozen). Its absolute value depends on your data and tokenizer, so do not decide convergence from the number alone. Listen to the callback samples in:
+```text
+chatterbox_output*/inference_samples/checkpoint-<step>.wav
+```
+
+### Built-in safety checks
+The scripts stop with a clear error when:
+- the model folder does not match your flags (for example Turbo files while `is_nano = True`),
+- `len(tokenizer)` differs from `new_vocab_size`,
+- preprocessed data was built with a different tokenizer (checked through `preprocess_meta.json`),
+- a checkpoint is missing T3 weights, or a merged model does not have exactly the base model's keys.
 
 ---
 
-## 🗣️ Inference & Packing (Speech Synthesis)
+## ⚠️ Important Details
 
-The inference script is smart. Based on your `src/config.py` settings, it will automatically detect whether you trained a LoRA adapter or a Full model and merge the weights on-the-fly.
+**Preprocessing is mandatory.** The kit extracts speaker embeddings and acoustic tokens, tokenizes the text and stores one `.pt` file per clip, so training only loads tensors. Preprocessed data belongs to one vocabulary mode; each variant has its own folder.
 
-### 1. Prepare Reference Audio (Prompt)
-Place a clean, 3-10 second reference `.wav` file in `speaker_reference/reference.wav`.
+**Length limits.**
+- `max_speech_len = 850` speech tokens. At 25 tokens per second this is about **34 seconds**. Longer clips are truncated and **lose their end-of-speech token**, so the model cannot learn to finish those utterances. Filter them out of your metadata.
+- `max_text_len = 256` tokens (254 after the start and stop tokens). Longer texts are truncated.
 
-### 2. Running Inference
-Edit `inference.py` to set your desired text:
+**Sample rates.** Training works at 16 kHz (other rates are resampled automatically); the output audio is 24 kHz.
+
+---
+
+## 🗣️ Inference & Voice Cloning
+
+`inference.py` reads `src/config.py`, rebuilds the model with the right vocabulary and loads the LoRA adapter or the full fine-tuned weights.
+
+Edit the settings at the top of the script:
 ```python
 TEXT_TO_SAY = "Merhaba, sesimi geliştirmem oldukça uzun zaman aldı ve şimdi sahip olduğuma göre, sessiz kalmayacağım."
-AUDIO_PROMPT = "./speaker_reference/2.wav"
+AUDIO_PROMPT = "./speaker_reference/2.wav"   # clean reference, longer than 5 seconds
 ```
-Run inference:
 ```bash
 python inference.py
 ```
-The output will be saved as `output.wav` (24kHz). The script automatically handles sentence splitting, concatenates pauses, and uses **Silero VAD** to trim silence/hallucinations at the end of generated audio.
+The result is `output.wav` (24 kHz). The script splits the text into sentences, joins them with short pauses and trims trailing silence and artifacts with Silero VAD. Turbo and Nano ignore `cfg_weight` and `exaggeration`; tune `temperature` and `repetition_penalty` instead.
 
-### 3. Packing Your Model (For LoRA Users)
-Once you have tested your LoRA using `inference.py` and are completely satisfied with the results, you should pack (merge) it into a single file for deployment or sharing.
+---
 
+## 📦 Exporting and Merging LoRA Weights
+
+To get one standalone file that needs neither PEFT nor the adapter folder:
 ```bash
 python merge_lora.py
 ```
-This process takes your base model and bakes the trained LoRA adapter directly into it. It will generate a standalone `t3_turbo_finetuned_merged.safetensors` file that you can use in production without needing PEFT or adapter folders anymore!
+This bakes the adapter into the base T3 and writes, inside your `output_dir`:
+```text
+t3_nano_finetuned_merged.safetensors
+# t3_turbo_finetuned_merged.safetensors / t3_finetuned_merged.safetensors for the other models
+```
+The script verifies that the merged file has exactly the base model's keys. The merged file contains only the T3 weights; the voice encoder, speech decoder and tokenizer still come from the variant's model folder.
 
 ---
 
-## 🛠️ Technical Details
+## 💡 Troubleshooting
 
-### Why Preprocessing?
-Original Chatterbox training pipelines often process audio "on-the-fly" (resampling, feature extraction) during training. This causes the GPU to wait for the CPU, slowing down training significantly.
-By running `preprocess.py`, we:
-1.  Extract Speaker Embeddings (Voice Encoder)
-2.  Extract Acoustic Tokens (S3Gen)
-3.  Tokenize Text
-4.  Save everything as optimized PyTorch tensors (`.pt`)
-This allows the `dataset.py` to simply load tensors, maximizing GPU utilization.
-
-### Tokenizer Structure
-**Turbo Model Tokenizer (Smart Vocab Extension):**
-Turbo mode uses GPT-2's powerful BPE tokenizer as a base. The `setup.py` script performs a **"Vocab Extension"**: it intelligently adds all unique characters from our 23-language grapheme set to the GPT-2 vocabulary. This process ensures that:
-1.  The model retains its powerful knowledge of English words and structures.
-2.  Special characters from other languages (e.g., `ğ, ş, ı` for Turkish; `é, à, ç` for French) are recognized as single, whole tokens, dramatically improving learning efficiency.
-3.  **You do not need to create a custom tokenizer manually.** The setup is fully automated.
-
-### VAD Integration
-During inference, `inference.py` uses Silero VAD to prevent hallucinations and sentence-ending elongations. This automatically trims unwanted silence and noise from generated audio.
-
-### Audio Processing Pipeline
-All audio processing uses **FFmpeg** for professional-quality results:
-- **Input:** Automatic conversion to mono (1 channel)
-- **Resampling:** Automatic resampling to required sample rates
-- **Training:** 16kHz processing
-- **Output:** 24kHz, 16-bit PCM WAV format
+| Issue | Cause and solution |
+|---|---|
+| `Tokenizer len X != new_vocab_size Y`, or `size mismatch` when loading T3 | `new_vocab_size` does not match the tokenizer in the model folder. Use the value printed by `setup.py` and make sure `extend_vocab` matches the folder you ran setup in. |
+| `Config expects Nano, but '<folder>' contains Turbo` (or the reverse) | The model folder does not match `is_nano`. Run `python setup.py` with the flags you want. |
+| `Data in '<folder>' was built with tokenizer len X, expected Y` | The preprocessed data belongs to another vocabulary mode. Delete that preprocessed folder and run again with `preprocess = True`. |
+| `Missing T3 keys` | The checkpoint does not match the rebuilt model (wrong variant or wrong `new_vocab_size`). Check the flags used for that training run. |
+| `Expected the original tokenizer (50276 tokens) but found ...` | `extend_vocab = False`, but an earlier run merged the tokenizer in this folder. Delete the folder and run `setup.py` again. |
+| `AssertionError: is_nano=True requires is_turbo=True` | Nano shares the Turbo architecture. Set both flags to `True`. |
+| `Audio prompt must be longer than 5 seconds!` | Use a longer reference clip. |
+| `FileNotFoundError: ... ve.safetensors` | Models are not downloaded yet. Run `python setup.py`. |
+| Download fails with 401/403 | Run `huggingface-cli login` or set `HF_TOKEN`. |
+| `CUDA out of memory` | Use LoRA, lower `batch_size` and raise `grad_accum`. Gradient checkpointing is already on. The inference callback loads a second copy of the model at every checkpoint, so peak VRAM happens there. |
+| bf16 not supported | Use an Ampere-or-newer GPU. |
+| No checkpoints or samples appear | `save_steps` is larger than the total step count, or `is_inference` is `False`. |
+| The process does not exit after training (seen on macOS) | The adapter or model is already saved; check the output folder. Setting `dataloader_num_workers = 0` avoids DataLoader worker problems. |
+| Poor quality or cut-off endings | Check the reference audio, make sure the text matches the audio, and remove clips longer than about 34 seconds. Prefer LoRA for Turbo and Nano. Listen to the samples at every epoch to catch problems early. |
 
 ---
 
-## 📝 Troubleshooting
+## 📜 Acknowledgments and Citation
 
-**Error:** `RuntimeError: Error(s) in loading state_dict for T3... size mismatch`
-*   **Solution:** `new_vocab_size` in config doesn't match the token count in `tokenizer.json`. Count the tokens in your json and update the config file.
+- Based on [Resemble AI Chatterbox](https://github.com/resemble-ai/chatterbox)
+- Pretrained base models:
+  - [ResembleAI / chatterbox (Standard)](https://huggingface.co/ResembleAI/chatterbox)
+  - [ResembleAI / chatterbox-turbo](https://huggingface.co/ResembleAI/chatterbox-turbo)
+  - [ResembleAI / chatterbox-nano](https://huggingface.co/ResembleAI/chatterbox-nano)
 
-**Error:** `FileNotFoundError: ... ve.safetensors`
-*   **Solution:** You haven't downloaded base models. Run `python setup.py`.
-
-**Error:** `CUDA out of memory`
-*   **Solution:** Enable `is_lora = True`. If still OOM, reduce `BATCH_SIZE` in `src/config.py` and increase `grad_accum`. Gradient Checkpointing is already enabled by default.
-
-**Poor Quality Output:**
-*   Check reference audio quality (should be clean, at least 5 seconds).
-*   Ensure adequate training data (minimum 30 minutes recommended).
-*   If training the Turbo model, **switch to LoRA** as it is much more stable than Full Fine-Tuning.
+```bibtex
+@software{chatterbox_finetuning,
+  author = {Gökhan Eraslan},
+  title = {Chatterbox Fine-Tuning & LoRA Toolkit (Nano, Turbo & Standard)},
+  year = {2025},
+  url = {https://github.com/gokhaneraslan/chatterbox-finetuning}
+}
+```
 
 ---
 
-## 🙏 Acknowledgments
-Based on the Chatterbox TTS model architecture. Special thanks to the original authors and contributors.
+## 📄 License
 
-## 📧 Support
-For issues and questions, please review `src/config.py` options or open an issue on GitHub with detailed error logs.
+- This toolkit and fine-tuning scripts are licensed under the [Apache-2.0 License](LICENSE).
+- The underlying **Chatterbox TTS** model architecture and code (vendored inside `src/chatterbox_/`) are developed by **Resemble AI** and licensed under the **MIT License**. Original license notices are retained within their respective files.

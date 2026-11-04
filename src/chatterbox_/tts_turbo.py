@@ -5,7 +5,6 @@ from pathlib import Path
 
 import librosa
 import torch
-import perth
 import pyloudnorm as ln
 import numpy as np
 from safetensors.torch import load_file
@@ -24,6 +23,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 REPO_ID = "ResembleAI/chatterbox-turbo"
+NANO_REPO_ID = "ResembleAI/chatterbox-nano"
 
 
 def punc_norm(text: str) -> str:
@@ -119,6 +119,7 @@ class ChatterboxTurboTTS:
         tokenizer: EnTokenizer,
         device: str,
         conds: Conditionals = None,
+        model_label: str = "Turbo",
     ):
         self.sr = S3GEN_SR  # sample rate of synthesized audio
         self.t3 = t3
@@ -127,11 +128,23 @@ class ChatterboxTurboTTS:
         self.tokenizer = tokenizer
         self.device = device
         self.conds = conds
-        self.watermarker = perth.PerthImplicitWatermarker()
+        self.model_label = model_label  # "Turbo" or "Nano", used for logging
 
     @classmethod
-    def from_local(cls, ckpt_dir, device) -> 'ChatterboxTurboTTS':
+    def from_local(cls, ckpt_dir, device, nano=None) -> 'ChatterboxTurboTTS':
         ckpt_dir = Path(ckpt_dir)
+
+        if nano is None:
+            has_nano = (ckpt_dir / "t3_nano_v1.safetensors").exists()
+            has_turbo = (ckpt_dir / "t3_turbo_v1.safetensors").exists()
+            
+            if has_nano == has_turbo:
+                raise FileNotFoundError(
+                    f"{ckpt_dir}: expected exactly one T3 checkpoint "
+                    f"(nano={has_nano}, turbo={has_turbo}). Pass nano=True/False explicitly.")
+            
+            nano = has_nano
+        logger.info(f"Loading {'Nano' if nano else 'Turbo'} from {ckpt_dir}")
 
         # Always load to CPU first for non-CUDA devices to handle CUDA-saved models
         if device in ["cpu", "mps"]:
@@ -145,9 +158,10 @@ class ChatterboxTurboTTS:
         )
         ve.to(device).eval()
 
-        # Turbo specific hp
+        # Turbo/Nano share the same architecture; Nano just uses a smaller
+        # GPT2 backbone and its own T3 checkpoint.
         hp = T3Config(text_tokens_dict_size=50276)
-        hp.llama_config_name = "GPT2_medium"
+        hp.llama_config_name = "GPT2_small" if nano else "GPT2_medium"
         hp.speech_tokens_dict_size = 6563
         hp.input_pos_emb = None
         hp.speech_cond_prompt_len = 375
@@ -155,7 +169,8 @@ class ChatterboxTurboTTS:
         hp.emotion_adv = False
 
         t3 = T3(hp)
-        t3_state = load_file(ckpt_dir / "t3_turbo_v1.safetensors")
+        t3_ckpt = "t3_nano_v1.safetensors" if nano else "t3_turbo_v1.safetensors"
+        t3_state = load_file(ckpt_dir / t3_ckpt)
         if "model" in t3_state.keys():
             t3_state = t3_state["model"][0]
         t3.load_state_dict(t3_state)
@@ -180,10 +195,11 @@ class ChatterboxTurboTTS:
         if builtin_voice.exists():
             conds = Conditionals.load(builtin_voice, map_location=map_location).to(device)
 
-        return cls(t3, s3gen, ve, tokenizer, device, conds=conds)
+        return cls(t3, s3gen, ve, tokenizer, device, conds=conds,
+                   model_label="Nano" if nano else "Turbo")
 
     @classmethod
-    def from_pretrained(cls, device) -> 'ChatterboxTurboTTS':
+    def from_pretrained(cls, device, nano=False) -> 'ChatterboxTurboTTS':
         # Check if MPS is available on macOS
         if device == "mps" and not torch.backends.mps.is_available():
             if not torch.backends.mps.is_built():
@@ -192,14 +208,32 @@ class ChatterboxTurboTTS:
                 print("MPS not available because the current MacOS version is not 12.3+ and/or you do not have an MPS-enabled device on this machine.")
             device = "cpu"
 
-        local_path = snapshot_download(
-            repo_id=REPO_ID,
-            token=os.getenv("HF_TOKEN") or True,
+        download_kwargs = dict(
+            repo_id=NANO_REPO_ID if nano else REPO_ID,
+            token=os.getenv("HF_TOKEN") or None,
             # Optional: Filter to download only what you need
-            allow_patterns=["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"]
+            allow_patterns=["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"],
         )
+        try:
+            local_path = snapshot_download(**download_kwargs)
+        except Exception as e:
+            # Some hf_xet versions crash on the Xet storage backend (e.g.
+            # "Unable to parse string as hex hash value"). Fall back to the
+            # standard HTTP/LFS download path so end users don't have to set
+            # HF_HUB_DISABLE_XET themselves.
+            if "xet" in str(e).lower() or "hex hash" in str(e).lower():
+                logger.warning(f"Xet download failed ({e}); retrying with Xet disabled.")
+                # NOTE: HF_HUB_DISABLE_XET is only read into this constant at
+                # import time, so setting the env var now would be a no-op.
+                # is_xet_available() reads the constant dynamically, so flip it
+                # directly to force the standard HTTP/LFS download path.
+                import huggingface_hub.constants as hf_constants
+                hf_constants.HF_HUB_DISABLE_XET = True
+                local_path = snapshot_download(**download_kwargs)
+            else:
+                raise
 
-        return cls.from_local(local_path, device)
+        return cls.from_local(local_path, device, nano=nano)
 
     def norm_loudness(self, wav, sr, target_lufs=-27):
         try:
@@ -267,7 +301,7 @@ class ChatterboxTurboTTS:
             assert self.conds is not None, "Please `prepare_conditionals` first or specify `audio_prompt_path`"
 
         if cfg_weight > 0.0 or exaggeration > 0.0 or min_p > 0.0:
-            logger.warning("CFG, min_p and exaggeration are not supported by Turbo version and will be ignored.")
+            logger.warning(f"CFG, min_p and exaggeration are not supported by the {self.model_label} version and will be ignored.")
 
         # Norm and tokenize text
         text = punc_norm(text)
@@ -295,5 +329,4 @@ class ChatterboxTurboTTS:
             n_cfm_timesteps=2,
         )
         wav = wav.squeeze(0).detach().cpu().numpy()
-        watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
-        return torch.from_numpy(watermarked_wav).unsqueeze(0)
+        return torch.from_numpy(wav).unsqueeze(0)
